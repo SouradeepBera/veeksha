@@ -4,7 +4,7 @@ import asyncio
 import threading
 import time
 from queue import Empty, Queue
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from veeksha.client.base import BaseLLMClient
 from veeksha.core.response import RequestResult
@@ -35,9 +35,10 @@ class ClientWorker:
         self.output_queue = output_queue
         self.stop_event = stop_event
         self.traffic_scheduler = traffic_scheduler
+        self._active_tasks: Set[asyncio.Task] = set()
 
     def run(self) -> None:
-        """Run the async event loop for this worker.
+        """Run the async event loop for this worker, fed by a puller thread.
 
         Uses an explicit event loop instead of ``asyncio.run()`` to avoid the
         default teardown behavior: ``asyncio.run()`` calls
@@ -52,45 +53,76 @@ class ClientWorker:
         """
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        intake_done = asyncio.Event()
+
+        puller = threading.Thread(
+            target=self._pull_loop,
+            args=(loop, intake_done),
+            name=f"client-puller-{self.worker_id}",
+            daemon=True,
+        )
+        puller.start()
         try:
-            loop.run_until_complete(self._run_async())
+            loop.run_until_complete(self._run_async(intake_done))
         finally:
             loop.close()
+        puller.join(timeout=1.0)
 
-    async def _run_async(self) -> None:
-        """Async main loop."""
-        loop = asyncio.get_running_loop()
-        active_tasks = set()
+    def _pull_loop(
+        self, loop: asyncio.AbstractEventLoop, intake_done: asyncio.Event
+    ) -> None:
+        """Pull requests off the queue on a dedicated thread.
 
+        Intake used to be awaited on the event loop, so fetching occupied a
+        slot in the loop's own work sequence: item N+1 was not requested until
+        task N had been created.  Pulling here keeps that off the loop -- items
+        land as pending ``_spawn`` callbacks, which the loop turns into tasks in
+        batches rather than one per executor round-trip.
+        ``call_soon_threadsafe`` delivers in order, so dispatch order holds.
+        """
         while not self.stop_event.is_set():
             try:
-                # avoid blocking the event loop
-                item = await loop.run_in_executor(
-                    None, lambda: self.input_queue.get(timeout=QUEUE_GET_TIMEOUT_S)
-                )
+                item = self.input_queue.get(timeout=QUEUE_GET_TIMEOUT_S)
             except Empty:
-                continue
-            except Exception:
-                if self.stop_event.is_set():
-                    break
                 continue
 
             if item is None:  # sentinel
                 break
 
-            task = asyncio.create_task(self._process_request(item))
-            active_tasks.add(task)
-            task.add_done_callback(active_tasks.discard)
+            try:
+                loop.call_soon_threadsafe(self._spawn, item)
+            except RuntimeError:  # loop already closed
+                break
 
-        if active_tasks:
+        try:
+            loop.call_soon_threadsafe(intake_done.set)
+        except RuntimeError:  # loop already closed
+            pass
+
+    def _spawn(self, item) -> None:
+        """Start a request task. Runs on the loop thread, via the puller."""
+        task = asyncio.create_task(self._process_request(item))
+        self._active_tasks.add(task)
+        task.add_done_callback(self._active_tasks.discard)
+
+    async def _run_async(self, intake_done: asyncio.Event) -> None:
+        """Wait out intake, then tear down whatever is still in flight.
+
+        Callbacks run in the order the puller posted them, so every task it
+        spawned ahead of the sentinel is created before this wakes: a shutdown
+        racing the dispatcher's drain cannot drop already-queued requests.
+        """
+        await intake_done.wait()
+
+        if self._active_tasks:
             logger.debug(
                 "Client worker %d cancelling %d pending tasks",
                 self.worker_id,
-                len(active_tasks),
+                len(self._active_tasks),
             )
-            for task in active_tasks:
+            for task in self._active_tasks:
                 task.cancel()
-            await asyncio.wait(active_tasks, timeout=2.0)
+            await asyncio.wait(self._active_tasks, timeout=2.0)
 
         logger.debug("Client worker %d exiting", self.worker_id)
 
