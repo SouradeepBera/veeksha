@@ -1,6 +1,5 @@
 """Dispatch worker for sending requests to client queues."""
 
-import random
 import time
 from queue import Queue
 from typing import TYPE_CHECKING, List, Optional
@@ -9,6 +8,7 @@ from veeksha.core.context import WorkerContext
 from veeksha.evaluator.base import BaseEvaluator
 from veeksha.logger import init_logger
 from veeksha.traffic.base import BaseTrafficScheduler
+from veeksha.traffic.load_distributor import LoadDistributor
 
 if TYPE_CHECKING:
     from veeksha.core.trace_recorder import TraceRecorder
@@ -33,6 +33,7 @@ class DispatchWorker:
         client_queues: List[Queue],
         evaluator: BaseEvaluator,
         worker_context: WorkerContext,
+        load_distributor: LoadDistributor,
         trace_recorder: Optional["TraceRecorder"] = None,
     ):
         """Initialize the dispatch worker.
@@ -42,6 +43,7 @@ class DispatchWorker:
             client_queues: Queues to dispatch requests to (one per client worker)
             evaluator: Evaluator for registering request dispatch
             worker_context: Worker context with stop event
+            load_distributor: Picks the client queue for each dispatch
             trace_recorder: Optional recorder for dispatch traces
         """
         self.traffic_scheduler = traffic_scheduler
@@ -49,19 +51,7 @@ class DispatchWorker:
         self.evaluator = evaluator
         self.worker_context = worker_context
         self.trace_recorder = trace_recorder
-
-    def _select_queue(self) -> Queue:
-        """Select a client queue using power-of-two load balancing"""
-        n = len(self.client_queues)
-        if n == 1:
-            return self.client_queues[0]
-
-        idx1, idx2 = random.sample(range(n), 2)
-
-        q1 = self.client_queues[idx1]
-        q2 = self.client_queues[idx2]
-
-        return q1 if q1.qsize() <= q2.qsize() else q2
+        self.load_distributor = load_distributor
 
     def run(self) -> None:
         """Main worker loop."""
@@ -94,7 +84,7 @@ class DispatchWorker:
                     dispatched_at=dispatched_at,
                 )
 
-            queue = self._select_queue()
+            queue = self.client_queues[self.load_distributor.select_queue()]
             queue.put(
                 (request, session_id, session_size, scheduler_ready_at, dispatched_at)
             )
@@ -141,7 +131,7 @@ class DispatchWorker:
                     dispatched_at=dispatched_at,
                 )
 
-            queue = self._select_queue()
+            queue = self.client_queues[self.load_distributor.select_queue()]
             queue.put(
                 (request, session_id, session_size, scheduler_ready_at, dispatched_at)
             )

@@ -157,7 +157,8 @@ class ClientWorker:
                 client_completed_at=time.monotonic(),
             )
 
-        # Set lifecycle timestamps
+        # Set provenance + lifecycle timestamps
+        result.client_worker_id = self.worker_id
         result.scheduler_ready_at = scheduler_ready_at
         result.scheduler_dispatched_at = scheduler_dispatched_at
         result.client_picked_up_at = client_picked_up_at

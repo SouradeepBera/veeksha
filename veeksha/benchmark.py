@@ -24,6 +24,7 @@ from veeksha.health import HealthChecker, maybe_build_tts_zombie_probe
 from veeksha.logger import init_logger
 from veeksha.orchestration.benchmark_orchestrator import managed_server
 from veeksha.traffic.registry import TrafficSchedulerRegistry
+from veeksha.traffic.load_distributor import LoadDistributor
 from veeksha.wandb_integration import (
     maybe_finish_wandb_run,
     maybe_init_wandb_run,
@@ -112,6 +113,7 @@ def _run_main_loop(
             max(3, -(-int(target_sessions) // 8)) if target_sessions else 3
         )
     client_queues = [Queue() for _ in range(num_client_threads)]
+    load_distributor = LoadDistributor(num_client_threads)
     output_queue = Queue()
     stop_event = threading.Event()
     generator_lock = threading.Lock()
@@ -149,6 +151,7 @@ def _run_main_loop(
             "client_queues": client_queues,
             "evaluator": evaluator,
             "trace_recorder": trace_recorder,
+            "load_distributor": load_distributor,
         },
         pool_size=runtime_config.num_dispatcher_threads,
     )
@@ -160,6 +163,7 @@ def _run_main_loop(
             "output_queue": output_queue,
             "traffic_scheduler": traffic_scheduler,
             "evaluator": evaluator,
+            "load_distributor": load_distributor,
         },
         pool_size=runtime_config.num_completion_threads,
     )

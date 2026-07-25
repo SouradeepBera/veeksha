@@ -8,6 +8,7 @@ from veeksha.core.response import RequestResult
 from veeksha.evaluator.base import BaseEvaluator
 from veeksha.logger import init_logger
 from veeksha.traffic.base import BaseTrafficScheduler
+from veeksha.traffic.load_distributor import LoadDistributor
 
 logger = init_logger(__name__)
 
@@ -31,6 +32,7 @@ class CompletionWorker:
         traffic_scheduler: BaseTrafficScheduler,
         evaluator: BaseEvaluator,
         worker_context: WorkerContext,
+        load_distributor: LoadDistributor,
     ):
         """Initialize the completion worker.
 
@@ -44,10 +46,13 @@ class CompletionWorker:
         self.traffic_scheduler = traffic_scheduler
         self.evaluator = evaluator
         self.worker_context = worker_context
+        self.load_distributor = load_distributor
 
     def _process_result(self, result: RequestResult) -> None:
         """Process a single request result."""
         result.result_processed_at = time.monotonic()
+
+        self.load_distributor.notify_completion(result.client_worker_id)
 
         self.traffic_scheduler.notify_completion(
             request_id=result.request_id,

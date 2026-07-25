@@ -35,6 +35,8 @@ class RequestResult:
         request_id: Unique request identifier
         session_id: Session this request belongs to
         session_total_requests: Total number of requests in the session
+        client_worker_id: Index of the client worker thread that ran this
+            request; -1 until the worker stamps it
         channels: Per-channel response data
         success: True if request completed without error
         error_code: HTTP error code if request failed
@@ -52,6 +54,10 @@ class RequestResult:
     session_id: int
 
     session_total_requests: int = 1
+
+    # Stamped by ClientWorker._process_request() on the way out, alongside the
+    # lifecycle timestamps -- clients do not know which worker is running them.
+    client_worker_id: int = -1
 
     # per-channel responses
     channels: Dict[ChannelModality, ChannelResponse] = field(default_factory=dict)
