@@ -75,3 +75,8 @@ class OpenAIRouterClient(BaseLLMClient):
             on_request_sent=on_request_sent,
             on_request_dispatched=on_request_dispatched,
         )
+
+    async def aclose(self) -> None:
+        """Close both sub-clients; each holds its own session."""
+        await self._chat_client.aclose()
+        await self._completions_client.aclose()

@@ -112,6 +112,9 @@ def maybe_run_warmup(session_generator, client) -> None:
     async def run_all(warmup_sessions):
         for session in tqdm(warmup_sessions, desc="Warmup", unit="sess"):
             await warmup_one(session)
+        # ``asyncio.run`` closes the loop this warmup's session is bound to;
+        # the benchmark's client threads build their own afterwards.
+        await client.aclose()
 
     if hasattr(session_generator, "get_warmup_sessions"):
         warmup_sessions = session_generator.get_warmup_sessions()

@@ -65,6 +65,7 @@ def test_chat_client_against_mock_is_measured():
                 results.append(
                     await client.send_request(request=_make_request(rid), session_id=0)
                 )
+            await client.aclose()
             return results
 
         results = asyncio.run(_run())
