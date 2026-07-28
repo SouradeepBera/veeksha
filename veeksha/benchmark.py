@@ -111,6 +111,7 @@ def _run_main_loop(
         num_client_threads = (
             max(3, -(-int(target_sessions) // 8)) if target_sessions else 3
         )
+        num_client_threads = min(num_client_threads, 8)
     client_queues = [Queue() for _ in range(num_client_threads)]
     output_queue = Queue()
     stop_event = threading.Event()
