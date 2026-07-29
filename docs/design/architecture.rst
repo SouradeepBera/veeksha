@@ -33,7 +33,7 @@ Veeksha is composed of several key components that work together:
     │                       ▼                                                 │
     │  ┌──────────────────────────────────────────┐                           │
     │  │             Client Runners               │                           │
-    │  │  - Async HTTP clients (httpx)            │                           │
+    │  │  - Async HTTP clients (aiohttp)          │                           │
     │  │  - Streaming response handling           │                           │
     │  └──────────────────────────────────────────┘                           │
     └─────────────────────────────────────────────────────────────────────────┘
@@ -140,8 +140,8 @@ Veeksha uses a multi-threaded architecture with configurable worker counts:
     and feed results to the evaluator. More threads help with high throughput.
 
 **Client Threads**
-    Each runs an async event loop with an ``httpx.AsyncClient`` for making
-    concurrent HTTP requests. More threads increase I/O parallelism.
+    Each runs an async event loop with its own ``aiohttp.ClientSession`` for
+    making concurrent HTTP requests. More threads increase I/O parallelism.
 
 .. note::
 

@@ -74,3 +74,10 @@ class BaseLLMClient(ABC):
             RequestResult containing response data and timing
         """
         raise NotImplementedError
+
+    async def aclose(self) -> None:
+        """Release transport state held for the calling thread's event loop.
+
+        No-op by default; HTTP clients override it to close their session.
+        """
+        return None

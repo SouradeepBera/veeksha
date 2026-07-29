@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import time
 from typing import TYPE_CHECKING, Any, Callable, List, Optional
 
-import httpx  # type: ignore
+import aiohttp
 
 from veeksha.client.openai_base import OpenAIBaseClient
 from veeksha.core.audio_contract import DEFAULT_AUDIO_SAMPLE_RATE, AudioMetricKey
@@ -27,7 +28,7 @@ logger = init_logger(__name__)
 
 
 class OpenAIChatCompletionsClient(OpenAIBaseClient):
-    """Async client for OpenAI Chat Completions API using httpx.
+    """Async client for OpenAI Chat Completions API using aiohttp.
 
     Works with new Request objects that have channels instead of prompt tuples.
     """
@@ -291,21 +292,21 @@ class OpenAIChatCompletionsClient(OpenAIBaseClient):
 
         return channels
 
-    async def _process_stream(self, response: httpx.Response):
+    async def _process_stream(self, response: aiohttp.ClientResponse):
         """Process SSE stream from server."""
         import json
 
-        buffer = ""
-        async for chunk in response.aiter_text():
+        buffer = b""
+        async for chunk in response.content.iter_any():
             buffer += chunk
-            while "\n" in buffer:
-                line, buffer = buffer.split("\n", 1)
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
                 line = line.strip()
                 if not line:
                     continue
-                if line.startswith("data:"):
+                if line.startswith(b"data:"):
                     data_str = line[5:].strip()
-                    if data_str == "[DONE]":
+                    if data_str == b"[DONE]":
                         return
                     try:
                         yield json.loads(data_str)
@@ -321,8 +322,6 @@ class OpenAIChatCompletionsClient(OpenAIBaseClient):
         on_request_dispatched: Optional[Callable[[], None]] = None,
     ) -> RequestResult:
         """Send a streaming request to the OpenAI Chat Completions API."""
-
-        timeout = self.config.request_timeout
 
         max_tokens_limit = None
         if (
@@ -401,12 +400,10 @@ class OpenAIChatCompletionsClient(OpenAIBaseClient):
             client_sent_at = t_start
             if preflight_enabled:
                 headers["X-Veeksha-Request-Id"] = str(request.id)
-            async with client.stream(
-                "POST",
+            async with client.post(
                 self.chat_address,
                 json=body,
                 headers=headers,
-                timeout=timeout,
             ) as response:
                 response.raise_for_status()
 
@@ -472,18 +469,18 @@ class OpenAIChatCompletionsClient(OpenAIBaseClient):
                     # TODO: video deltas
                     video_data = self._process_video_response(delta, video_data)
 
-        except httpx.HTTPStatusError as e:
-            error_code = e.response.status_code if e.response else 500
+        except aiohttp.ClientResponseError as e:
+            error_code = e.status or 500
             error_msg = error_msg or str(e)
             logger.warning(f"HTTP Error: status={error_code} msg={error_msg}")
-        except httpx.ConnectError as e:
-            error_code = 503
-            error_msg = error_msg or str(e)
-            logger.warning(f"Connection Error: ({error_code}) {error_msg}")
-        except httpx.TimeoutException:
+        except asyncio.TimeoutError:
             error_code = 408
             error_msg = error_msg or "Request timed out"
             logger.warning(f"Timeout Error: ({error_code}) {error_msg}")
+        except aiohttp.ClientConnectorError as e:
+            error_code = 503
+            error_msg = error_msg or str(e)
+            logger.warning(f"Connection Error: ({error_code}) {error_msg}")
         except Exception as e:
             error_code = error_code or 520
             error_msg = error_msg or str(e)

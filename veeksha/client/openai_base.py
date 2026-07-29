@@ -6,9 +6,10 @@ import functools
 import threading
 from typing import Any, Dict
 
-import httpx
+import aiohttp
 
 from veeksha.client.base import BaseLLMClient
+from veeksha.client.http_session import close_session, new_session
 from veeksha.core.request import Request
 from veeksha.core.tokenizer import TokenizerProvider
 from veeksha.types import ChannelModality
@@ -18,7 +19,7 @@ class OpenAIBaseClient(BaseLLMClient):
     """Common base for OpenAI-compatible clients.
 
     This includes:
-    - Thread-local httpx.AsyncClient management
+    - Thread-local aiohttp.ClientSession management
     - Token counting helpers
     - Global + per-request sampling params merge logic
     """
@@ -41,13 +42,15 @@ class OpenAIBaseClient(BaseLLMClient):
         """Return token count for text with caching."""
         return len(self.text_tokenizer_handle.encode(text))
 
-    def _get_client(self) -> httpx.AsyncClient:
-        """Get or create a thread-local httpx client."""
+    def _get_client(self) -> aiohttp.ClientSession:
+        """Get or create a thread-local aiohttp session."""
         if not hasattr(self.client_storage, "client"):
-            self.client_storage.client = httpx.AsyncClient(
-                timeout=self.config.request_timeout
-            )
+            self.client_storage.client = new_session(self.config.request_timeout)
         return self.client_storage.client
+
+    async def aclose(self) -> None:
+        """Close the session bound to the calling thread's event loop."""
+        await close_session(self.client_storage)
 
     def _get_sampling_params(self, request: Request) -> Dict[str, Any]:
         """Merge global and per-request sampling params.

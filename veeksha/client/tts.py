@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from collections.abc import Callable
@@ -9,9 +10,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from urllib.parse import urljoin
 
-import httpx
+import aiohttp
 
 from veeksha.client.base import BaseLLMClient
+from veeksha.client.http_session import close_session, new_session
 from veeksha.core.audio_contract import AudioMetricKey
 from veeksha.core.request import Request
 from veeksha.core.request_content import TextChannelRequestContent
@@ -73,7 +75,7 @@ class TTSClient(BaseLLMClient):
             },
         )
 
-    def _validate_audio_response(self, response: httpx.Response) -> None:
+    def _validate_audio_response(self, response: aiohttp.ClientResponse) -> None:
         content_type = response.headers.get("Content-Type", "")
         media_type = content_type.partition(";")[0].strip().lower()
         allowed = {
@@ -91,13 +93,15 @@ class TTSClient(BaseLLMClient):
                 f"response, got Content-Type {content_type!r}"
             )
 
-    def _get_client(self) -> httpx.AsyncClient:
-        """Return a thread-local httpx client bound to the caller's event loop."""
+    def _get_client(self) -> aiohttp.ClientSession:
+        """Return a thread-local aiohttp session bound to the caller's event loop."""
         if not hasattr(self._client_storage, "client"):
-            self._client_storage.client = httpx.AsyncClient(
-                timeout=self.config.request_timeout
-            )
+            self._client_storage.client = new_session(self.config.request_timeout)
         return self._client_storage.client
+
+    async def aclose(self) -> None:
+        """Close the session bound to the calling thread's event loop."""
+        await close_session(self._client_storage)
 
     async def send_request(
         self,
@@ -148,12 +152,10 @@ class TTSClient(BaseLLMClient):
         client_sent_at = t_start
 
         try:
-            async with self._get_client().stream(
-                "POST",
+            async with self._get_client().post(
                 speech_request.url,
                 headers=speech_request.headers,
                 json=speech_request.payload,
-                timeout=self.config.request_timeout,
             ) as response:
                 response.raise_for_status()
                 self._validate_audio_response(response)
@@ -161,7 +163,7 @@ class TTSClient(BaseLLMClient):
                     on_request_dispatched()
 
                 sent_notified = False
-                async for chunk in response.aiter_bytes(chunk_size=self._chunk_size):
+                async for chunk in response.content.iter_chunked(self._chunk_size):
                     if not chunk:
                         continue
                     receive_time = time.monotonic()
@@ -184,18 +186,18 @@ class TTSClient(BaseLLMClient):
             error_code = 502
             error_msg = str(e)
             logger.warning("TTS protocol error: (%s) %s", error_code, error_msg)
-        except httpx.HTTPStatusError as e:
-            error_code = e.response.status_code if e.response else 500
+        except aiohttp.ClientResponseError as e:
+            error_code = e.status or 500
             error_msg = str(e)
             logger.warning("HTTP Error: status=%s msg=%s", error_code, error_msg)
-        except httpx.ConnectError as e:
-            error_code = 503
-            error_msg = str(e)
-            logger.warning("Connection Error: (%s) %s", error_code, error_msg)
-        except httpx.TimeoutException:
+        except asyncio.TimeoutError:
             error_code = 408
             error_msg = "TTS request timed out"
             logger.warning("Timeout Error: (%s) %s", error_code, error_msg)
+        except aiohttp.ClientConnectorError as e:
+            error_code = 503
+            error_msg = str(e)
+            logger.warning("Connection Error: (%s) %s", error_code, error_msg)
         except Exception as e:
             error_code = 520
             error_msg = str(e)
