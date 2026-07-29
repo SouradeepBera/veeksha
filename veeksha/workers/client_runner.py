@@ -3,7 +3,7 @@
 import asyncio
 import threading
 import time
-from queue import Empty, Queue
+from queue import Queue, ShutDown
 from typing import List, Optional
 
 from veeksha.client.base import BaseLLMClient
@@ -12,9 +12,6 @@ from veeksha.logger import init_logger
 from veeksha.traffic.base import BaseTrafficScheduler
 
 logger = init_logger(__name__)
-
-
-QUEUE_GET_TIMEOUT_S = 0.1
 
 
 class ClientWorker:
@@ -26,14 +23,12 @@ class ClientWorker:
         client: BaseLLMClient,
         input_queue: Queue,
         output_queue: Queue,
-        stop_event: threading.Event,
         traffic_scheduler: Optional[BaseTrafficScheduler] = None,
     ):
         self.worker_id = worker_id
         self.client = client
         self.input_queue = input_queue
         self.output_queue = output_queue
-        self.stop_event = stop_event
         self.traffic_scheduler = traffic_scheduler
 
     def run(self) -> None:
@@ -62,21 +57,15 @@ class ClientWorker:
         loop = asyncio.get_running_loop()
         active_tasks = set()
 
-        while not self.stop_event.is_set():
+        while True:
             try:
                 # avoid blocking the event loop
-                item = await loop.run_in_executor(
-                    None, lambda: self.input_queue.get(timeout=QUEUE_GET_TIMEOUT_S)
-                )
-            except Empty:
-                continue
-            except Exception:
-                if self.stop_event.is_set():
-                    break
-                continue
-
-            if item is None:  # sentinel
+                item = await loop.run_in_executor(None, self.input_queue.get)
+            except ShutDown:
+                # ClientRunnerManager.stop() closed the queue
                 break
+            except Exception:
+                continue
 
             task = asyncio.create_task(self._process_request(item))
             active_tasks.add(task)
@@ -165,7 +154,21 @@ class ClientWorker:
         result.scheduler_dispatched_at = scheduler_dispatched_at
         result.client_picked_up_at = client_picked_up_at
 
-        self.output_queue.put(result)
+        try:
+            self.output_queue.put(result)
+        except ShutDown:
+            # Reachable only on the timeout path, where wait() is skipped so
+            # teardown can close the output queue while this request is still
+            # in flight.  The evaluator has already excluded these requests
+            # via set_included_requests, so dropping the result is correct;
+            # swallowing keeps it from surfacing as an unretrieved task
+            # exception.
+            logger.debug(
+                "Client worker %d: output queue closed, dropping result for "
+                "request %s",
+                self.worker_id,
+                request.id,
+            )
 
 
 class ClientRunnerManager:
@@ -176,7 +179,6 @@ class ClientRunnerManager:
         client: BaseLLMClient,
         input_queues: List[Queue],
         output_queue: Queue,
-        stop_event: threading.Event,
         traffic_scheduler: Optional[BaseTrafficScheduler] = None,
     ):
         """Initialize the client runner manager.
@@ -185,13 +187,11 @@ class ClientRunnerManager:
             client: LLM client to use for requests
             input_queues: One input queue per worker
             output_queue: Shared output queue for results
-            stop_event: Stop event for graceful shutdown
             traffic_scheduler: Optional scheduler for request-sent notification
         """
         self.client = client
         self.input_queues = input_queues
         self.output_queue = output_queue
-        self.stop_event = stop_event
         self.traffic_scheduler = traffic_scheduler
         self.workers: List[ClientWorker] = []
         self.threads: List[threading.Thread] = []
@@ -204,7 +204,6 @@ class ClientRunnerManager:
                 client=self.client,
                 input_queue=queue,
                 output_queue=self.output_queue,
-                stop_event=self.stop_event,
                 traffic_scheduler=self.traffic_scheduler,
             )
             self.workers.append(worker)
@@ -220,10 +219,11 @@ class ClientRunnerManager:
         logger.info("Started %d client worker threads", len(self.threads))
 
     def stop(self) -> None:
-        """Signal workers to stop."""
-        self.stop_event.set()
+        """
+            Close every input queue, waking all workers immediately.
+        """
         for queue in self.input_queues:
-            queue.put(None)  # Sentinel
+            queue.shutdown(immediate=True)
 
     def wait(self, timeout: Optional[float] = None) -> bool:
         """Wait for all worker threads to finish.
