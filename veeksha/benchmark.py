@@ -122,7 +122,6 @@ def _run_main_loop(
         client=client,
         input_queues=client_queues,
         output_queue=output_queue,
-        stop_event=stop_event,
         traffic_scheduler=traffic_scheduler,
     )
 
@@ -212,8 +211,10 @@ def _run_main_loop(
     if not pending_in_flight:
         client_runner.wait()
 
-    for _ in range(runtime_config.num_completion_threads):
-        output_queue.put(None)
+    # immediate=False (unlike the client queues): results already queued are
+    # measurements, so completion workers must drain them before ShutDown is
+    # raised.  immediate=True would discard the backlog.
+    output_queue.shutdown(immediate=False)
     pool_manager.join_pool("completion", timeout=1.0)
 
 

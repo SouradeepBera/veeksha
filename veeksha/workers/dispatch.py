@@ -2,7 +2,7 @@
 
 import random
 import time
-from queue import Queue
+from queue import Queue, ShutDown
 from typing import TYPE_CHECKING, List, Optional
 
 from veeksha.core.context import WorkerContext
@@ -95,9 +95,24 @@ class DispatchWorker:
                 )
 
             queue = self._select_queue()
-            queue.put(
-                (request, session_id, session_size, scheduler_ready_at, dispatched_at)
-            )
+            try:
+                queue.put(
+                    (
+                        request,
+                        session_id,
+                        session_size,
+                        scheduler_ready_at,
+                        dispatched_at,
+                    )
+                )
+            except ShutDown:
+                # Client queues were closed by ClientRunnerManager.stop();
+                # there is nothing left to dispatch to, so skip the drain.
+                logger.debug(
+                    "Dispatch worker %s: client queues closed, exiting",
+                    self.worker_context.worker_id,
+                )
+                return
 
         # Drain remaining ready requests
         self._drain()
@@ -142,6 +157,19 @@ class DispatchWorker:
                 )
 
             queue = self._select_queue()
-            queue.put(
-                (request, session_id, session_size, scheduler_ready_at, dispatched_at)
-            )
+            try:
+                queue.put(
+                    (
+                        request,
+                        session_id,
+                        session_size,
+                        scheduler_ready_at,
+                        dispatched_at,
+                    )
+                )
+            except ShutDown:
+                logger.debug(
+                    "Dispatch worker %s: client queues closed mid-drain",
+                    self.worker_context.worker_id,
+                )
+                break
