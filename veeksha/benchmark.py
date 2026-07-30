@@ -113,7 +113,6 @@ def _run_main_loop(
     client_queues = [Queue() for _ in range(num_client_threads)]
     output_queue = Queue()
     stop_event = threading.Event()
-    generator_lock = threading.Lock()
 
     session_counter = SharedSessionCounter(max_sessions=runtime_config.max_sessions)
 
@@ -133,7 +132,6 @@ def _run_main_loop(
         worker_kwargs={
             "traffic_scheduler": traffic_scheduler,
             "session_generator": session_generator,
-            "generator_lock": generator_lock,
             "session_counter": session_counter,
             "pregenerated_sessions": pregenerated_sessions,
         },

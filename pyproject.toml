@@ -51,6 +51,7 @@ dependencies = [
     "regex",
     "soundfile",
     "librosa",
+    "atomics>=1.0.3",
 ]
 
 [project.scripts]
