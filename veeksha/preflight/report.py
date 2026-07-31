@@ -34,8 +34,10 @@ def _config_rows(config: PreflightCheckConfig, check_config) -> List[List[str]]:
     """Flatten the load level and workload/mock timings into name/value rows."""
     rows = [
         ["concurrency", str(config.concurrency)],
-        ["num_sessions", str(config.num_sessions)],
     ]
+    for name, value in vars(config.runtime).items():
+        if not name.startswith("_"):
+            rows.append([f"runtime.{name}", str(value)])
     for name, value in vars(check_config).items():
         if not name.startswith("_"):
             rows.append([name, str(value)])

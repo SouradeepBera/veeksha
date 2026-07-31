@@ -60,7 +60,7 @@ def _run_one_check(config: PreflightCheckConfig) -> bool:
     all_passed = True
     common = dict(
         traffic_scheduler=config.build_traffic(),
-        num_sessions=config.num_sessions,
+        runtime=config.runtime,
     )
 
     # (enabled, runner, group config, dir slug, display name)

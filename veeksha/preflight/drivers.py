@@ -177,7 +177,7 @@ def _build_benchmark_config(
     client_config: BaseClientConfig,
     session_config: SyntheticSessionGeneratorConfig,
     traffic_scheduler: BaseTrafficConfig,
-    num_sessions: int,
+    runtime: RuntimeConfig,
     output_dir: str,
 ) -> BenchmarkConfig:
     return BenchmarkConfig(
@@ -185,7 +185,7 @@ def _build_benchmark_config(
         session_generator=session_config,
         traffic_scheduler=traffic_scheduler,
         client=client_config,
-        runtime=RuntimeConfig(max_sessions=num_sessions),
+        runtime=runtime,
         server=None,
         # Preflight scores its own drift metrics; suppress the evaluator's dump.
         evaluators=[PerformanceEvaluatorConfig(stream_metrics=False)],
@@ -252,21 +252,24 @@ def _score_run(
     ttfc_ms: float,
     tpoc_ms: float,
     traffic_scheduler: BaseTrafficConfig,
-    num_sessions: int,
+    runtime: RuntimeConfig,
     output_dir: str,
 ) -> ScoreReport:
     """Drive one client config against a running mock and score the drift."""
     benchmark_config = _build_benchmark_config(
-        client_config, session_config, traffic_scheduler, num_sessions, output_dir
+        client_config, session_config, traffic_scheduler, runtime, output_dir
     )
     results = _run_capturing(benchmark_config)
     server_records = server.fetch_records()
     return scorer.score(results, server_records, ttfc_ms=ttfc_ms, tpoc_ms=tpoc_ms)
 
 
-def _log(kind: str, num_sessions: int, server: MockServerHandle) -> None:
+def _log(kind: str, runtime: RuntimeConfig, server: MockServerHandle) -> None:
     logger.info(
-        "Preflight %s: %d sessions vs mock %s", kind, num_sessions, server.api_base
+        "Preflight %s: %d sessions vs mock %s",
+        kind,
+        runtime.max_sessions,
+        server.api_base,
     )
 
 
@@ -279,7 +282,7 @@ def run_text_preflight(
     cfg: PreflightTextCheckConfig,
     *,
     traffic_scheduler: BaseTrafficConfig,
-    num_sessions: int,
+    runtime: RuntimeConfig,
     output_dir: str,
 ) -> ScoreReport:
     """Chat (streaming SSE) path."""
@@ -288,7 +291,7 @@ def run_text_preflight(
         tpoc_ms=cfg.server_tpoc_ms,
         num_chunks=cfg.num_response_chunks,
     ) as server:
-        _log("text", num_sessions, server)
+        _log("text", runtime, server)
         client_config = OpenAIChatCompletionsClientConfig(
             api_base=server.api_base,
             api_key="preflight",
@@ -302,7 +305,7 @@ def run_text_preflight(
             ttfc_ms=cfg.server_ttfc_ms,
             tpoc_ms=cfg.server_tpoc_ms,
             traffic_scheduler=traffic_scheduler,
-            num_sessions=num_sessions,
+            runtime=runtime,
             output_dir=output_dir,
         )
 
@@ -311,12 +314,12 @@ def run_completions_preflight(
     cfg: PreflightTextCheckConfig,
     *,
     traffic_scheduler: BaseTrafficConfig,
-    num_sessions: int,
+    runtime: RuntimeConfig,
     output_dir: str,
 ) -> ScoreReport:
     """Completions (non-streaming) path -- one response, so no tpoc metric."""
     with spawn_mock_completions_server(ttfc_ms=cfg.server_ttfc_ms) as server:
-        _log("completions", num_sessions, server)
+        _log("completions", runtime, server)
         client_config = OpenAICompletionsClientConfig(
             api_base=server.api_base,
             api_key="preflight",
@@ -330,7 +333,7 @@ def run_completions_preflight(
             ttfc_ms=cfg.server_ttfc_ms,
             tpoc_ms=0.0,
             traffic_scheduler=traffic_scheduler,
-            num_sessions=num_sessions,
+            runtime=runtime,
             output_dir=output_dir,
         )
 
@@ -344,7 +347,7 @@ def run_tts_preflight(
     cfg: PreflightTtsCheckConfig,
     *,
     traffic_scheduler: BaseTrafficConfig,
-    num_sessions: int,
+    runtime: RuntimeConfig,
     output_dir: str,
 ) -> ScoreReport:
     """TTS (HTTP streaming raw audio) path."""
@@ -354,7 +357,7 @@ def run_tts_preflight(
         num_chunks=cfg.num_response_chunks,
         chunk_bytes=_TTS_CHUNK_BYTES,
     ) as server:
-        _log("tts", num_sessions, server)
+        _log("tts", runtime, server)
         client_config = TTSClientConfig(
             api_base=server.api_base,
             api_key="preflight",
@@ -371,7 +374,7 @@ def run_tts_preflight(
             ttfc_ms=cfg.server_ttfc_ms,
             tpoc_ms=cfg.server_tpoc_ms,
             traffic_scheduler=traffic_scheduler,
-            num_sessions=num_sessions,
+            runtime=runtime,
             output_dir=output_dir,
         )
 
@@ -380,7 +383,7 @@ def run_realtime_tts_preflight(
     cfg: PreflightTtsCheckConfig,
     *,
     traffic_scheduler: BaseTrafficConfig,
-    num_sessions: int,
+    runtime: RuntimeConfig,
     output_dir: str,
 ) -> ScoreReport:
     """Realtime-TTS (WebSocket) path."""
@@ -389,7 +392,7 @@ def run_realtime_tts_preflight(
         tpoc_ms=cfg.server_tpoc_ms,
         num_chunks=cfg.num_response_chunks,
     ) as server:
-        _log("realtime_tts", num_sessions, server)
+        _log("realtime_tts", runtime, server)
         client_config = RealtimeTTSClientConfig(
             api_base=server.api_base,
             api_key="preflight",
@@ -405,7 +408,7 @@ def run_realtime_tts_preflight(
             ttfc_ms=cfg.server_ttfc_ms,
             tpoc_ms=cfg.server_tpoc_ms,
             traffic_scheduler=traffic_scheduler,
-            num_sessions=num_sessions,
+            runtime=runtime,
             output_dir=output_dir,
         )
 
@@ -414,7 +417,7 @@ def run_vajra_tts_preflight(
     cfg: PreflightTtsCheckConfig,
     *,
     traffic_scheduler: BaseTrafficConfig,
-    num_sessions: int,
+    runtime: RuntimeConfig,
     output_dir: str,
 ) -> ScoreReport:
     """Vajra TTS-stream (WebSocket binary PCM) path."""
@@ -423,7 +426,7 @@ def run_vajra_tts_preflight(
         tpoc_ms=cfg.server_tpoc_ms,
         num_chunks=cfg.num_response_chunks,
     ) as server:
-        _log("vajra_tts_stream", num_sessions, server)
+        _log("vajra_tts_stream", runtime, server)
         client_config = VajraTTSStreamClientConfig(
             api_base=server.api_base,
             api_key="preflight",
@@ -439,7 +442,7 @@ def run_vajra_tts_preflight(
             ttfc_ms=cfg.server_ttfc_ms,
             tpoc_ms=cfg.server_tpoc_ms,
             traffic_scheduler=traffic_scheduler,
-            num_sessions=num_sessions,
+            runtime=runtime,
             output_dir=output_dir,
         )
 
@@ -453,7 +456,7 @@ def run_stt_preflight(
     cfg: PreflightSttCheckConfig,
     *,
     traffic_scheduler: BaseTrafficConfig,
-    num_sessions: int,
+    runtime: RuntimeConfig,
     output_dir: str,
 ) -> ScoreReport:
     """STT (WebSocket audio-in) path -- synthetic audio input, transcript out."""
@@ -462,7 +465,7 @@ def run_stt_preflight(
         tpoc_ms=cfg.server_tpoc_ms,
         num_chunks=cfg.num_response_chunks,
     ) as server:
-        _log("stt", num_sessions, server)
+        _log("stt", runtime, server)
         client_config = STTClientConfig(
             api_base=server.api_base,
             api_key="preflight",
@@ -480,6 +483,6 @@ def run_stt_preflight(
             ttfc_ms=cfg.server_ttfc_ms,
             tpoc_ms=cfg.server_tpoc_ms,
             traffic_scheduler=traffic_scheduler,
-            num_sessions=num_sessions,
+            runtime=runtime,
             output_dir=output_dir,
         )
