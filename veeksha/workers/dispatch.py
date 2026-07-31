@@ -119,14 +119,6 @@ class DispatchWorker:
 
         logger.debug("Dispatch worker %s exiting", self.worker_context.worker_id)
 
-    def _get_session_id(self, request) -> int:
-        """Get session ID for a request."""
-        return self.traffic_scheduler.get_session_id(request.id)
-
-    def _get_session_size(self, request) -> int:
-        """Get total number of requests in the session."""
-        return self.traffic_scheduler.get_session_size(request.id)
-
     def _drain(self) -> None:
         """Drain any remaining ready requests."""
         logger.debug(

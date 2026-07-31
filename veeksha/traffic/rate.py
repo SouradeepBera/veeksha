@@ -184,23 +184,6 @@ class RateTrafficScheduler(BaseTrafficScheduler):
             if not state.pending_nodes and not state.queued_nodes:
                 del self._sessions[session_id]
 
-    def get_session_id(self, request_id: int) -> int:
-        """Get the session ID for a given request ID."""
-        with self._condition:
-            session_id, _ = self._request_to_session.get(request_id, (-1, -1))
-        return session_id
-
-    def get_session_size(self, request_id: int) -> int:
-        """Get the total number of requests in the session for a given request ID."""
-        with self._condition:
-            session_id, _ = self._request_to_session.get(request_id, (-1, -1))
-            if session_id == -1:
-                return 1
-            state = self._sessions.get(session_id)
-            if state is None:
-                return 1
-            return len(state.session.requests)
-
     def has_pending_work(self) -> bool:
         """Check if there are pending sessions or in-flight requests."""
         with self._condition:

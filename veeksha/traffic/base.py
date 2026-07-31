@@ -56,22 +56,6 @@ class BaseTrafficScheduler:
         raise NotImplementedError
 
     @abstractmethod
-    def get_session_id(self, request_id: int) -> int:
-        """Get the session ID for a given request ID.
-
-        Returns -1 if the request is not found.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_session_size(self, request_id: int) -> int:
-        """Get the total number of requests in the session for a given request ID.
-
-        Returns 1 if the request is not found.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
     def has_pending_work(self) -> bool:
         """Check if there are pending sessions or in-flight requests."""
         raise NotImplementedError
