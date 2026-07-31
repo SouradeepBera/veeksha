@@ -33,6 +33,7 @@ class ConcurrentTrafficScheduler(BaseTrafficScheduler):
         self._start_monotonic = time.monotonic()
         self._ready_queue: List[ScheduledItem] = []
         self._sessions: Dict[int, ScheduledSessionState] = {}
+        self._session_locks: Dict[int, threading.Lock] = {}
         self._request_to_session: Dict[int, Tuple[int, int]] = {}
         self._pending_sessions: Deque[Session] = deque()
 
@@ -55,7 +56,7 @@ class ConcurrentTrafficScheduler(BaseTrafficScheduler):
                 ready_at=ready_at_time, request_id=request.id, request=request
             ),
         )
-        self._condition.notify_all()
+        self._condition.notify()
 
     def _active_session_count(self) -> int:
         return len(self._sessions)
@@ -71,8 +72,13 @@ class ConcurrentTrafficScheduler(BaseTrafficScheduler):
             cancel_on_failure=self.config.cancel_session_on_failure,
         )
         self._sessions[session.id] = state
+        self._session_locks[session.id] = threading.Lock()
 
-        # queue root nodes
+        # queue root nodes. The session lock is deliberately not taken here:
+        # both the state and its lock are published inside this critical
+        # section, so no other thread can obtain a reference to either until
+        # _condition is released. Taking it would nest _condition -> session,
+        # inverting the ordering used everywhere else.
         graph = session.session_graph
         for node_id in list(state.pending_nodes):
             if not parents(graph, node_id):
@@ -108,11 +114,11 @@ class ConcurrentTrafficScheduler(BaseTrafficScheduler):
             Tuple of (request, session_id, session_size, scheduler_ready_at) if
             ready, None if timeout.
         """
-        with self._condition:
-            result = self._try_pop_ready_locked()
-            if result is not None:
-                return result
+        result = self._try_pop()
+        if result is not None:
+            return result
 
+        with self._condition:
             if self._ready_queue:
                 wait_time = min(timeout, self._ready_queue[0].ready_at - self._now())
                 wait_time = max(0.0001, wait_time)
@@ -121,31 +127,40 @@ class ConcurrentTrafficScheduler(BaseTrafficScheduler):
 
             self._condition.wait(timeout=wait_time)
 
-            # check again after waking
-            return self._try_pop_ready_locked()
+        # check again after waking
+        return self._try_pop()
 
-    def _try_pop_ready_locked(self) -> Optional[Tuple[Request, int, int, float]]:
-        """Try to pop a ready item, must be called with lock held."""
-        if not self._ready_queue:
-            return None
+    def _try_pop(self) -> Optional[Tuple[Request, int, int, float]]:
+        """Try to pop a ready item. Must be called holding no lock.
 
-        if self._ready_queue[0].ready_at <= self._now():
+        Takes _condition and the session lock in turn, never together.
+        """
+        with self._condition:
+            if not self._ready_queue:
+                return None
+
+            if self._ready_queue[0].ready_at > self._now():
+                return None
+
             item = heapq.heappop(self._ready_queue)
             request = item.request
 
+            # A queued node stays in state.queued_nodes until it completes, and
+            # teardown requires that set to be empty, so both lookups are live.
             session_id, node_id = self._request_to_session[request.id]
             state = self._sessions[session_id]
-            session_size = len(state.session.requests)
+            session_lock = self._session_locks[session_id]
 
+        with session_lock:
+            session_size = len(state.session.requests)
             self._populate_history(request, state, node_id)
-            # ready_at (offset from scheduler start) as an absolute monotonic time.
-            scheduler_ready_at = item.ready_at + self._start_monotonic
-            return (request, session_id, session_size, scheduler_ready_at)
-        return None
+
+        # ready_at (offset from scheduler start) as an absolute monotonic time.
+        scheduler_ready_at = item.ready_at + self._start_monotonic
+        return (request, session_id, session_size, scheduler_ready_at)
 
     def pop_ready(self) -> Optional[Tuple[Request, int, int, float]]:
-        with self._condition:
-            return self._try_pop_ready_locked()
+        return self._try_pop()
 
     def _populate_history(
         self, request: Request, state: ScheduledSessionState, node_id: int
@@ -175,8 +190,15 @@ class ConcurrentTrafficScheduler(BaseTrafficScheduler):
         with self._condition:
             session_id, node_id = self._request_to_session.pop(request_id)
             state = self._sessions[session_id]
-            completed_at = completed_at_monotonic - self._start_monotonic
+            session_lock = self._session_locks[session_id]
 
+        completed_at = completed_at_monotonic - self._start_monotonic
+
+        # The session lock decides; _condition only applies the decision. The
+        # two are never held at the same time, so there is no lock ordering to
+        # get wrong and no path from one session's lock to another's.
+        released: List[Tuple[float, Request, int]] = []
+        with session_lock:
             state.completions[node_id] = completed_at
             state.queued_nodes.discard(node_id)
 
@@ -187,27 +209,41 @@ class ConcurrentTrafficScheduler(BaseTrafficScheduler):
             if not success and state.cancel_on_failure:
                 state.is_canceled = True
                 state.pending_nodes.clear()
-                if not state.queued_nodes:
-                    del self._sessions[session_id]
-                    self._try_activate_pending_locked()
-                return
+            else:
+                # children might be ready; claim the ones this thread releases
+                graph = state.session.session_graph
+                for edge in children(graph, node_id):
+                    child_id = edge.dst
+                    if child_id not in state.pending_nodes:
+                        continue
+                    node_ready_at = ready_at(graph, child_id, state.completions)
+                    if node_ready_at is None:
+                        continue
+                    # Claiming here is what makes a multi-parent child safe: two
+                    # parents completing concurrently both pass the membership
+                    # test only if the discard is not serialized with it.
+                    # queued_nodes is added to before pending_nodes is discarded
+                    # so the child is never absent from both sets.
+                    state.queued_nodes.add(child_id)
+                    state.pending_nodes.discard(child_id)
+                    released.append(
+                        (node_ready_at, state.session.requests[child_id], child_id)
+                    )
 
-            # children might be ready; release them
-            graph = state.session.session_graph
-            for edge in children(graph, node_id):
-                child_id = edge.dst
-                if child_id not in state.pending_nodes:
-                    continue
-                node_ready_at = ready_at(graph, child_id, state.completions)
-                if node_ready_at is not None:
-                    request = state.session.requests[child_id]
+            # Each thread removes its own node from queued_nodes under this
+            # lock, so exactly one can observe the transition to empty.
+            session_finished = not state.pending_nodes and not state.queued_nodes
+
+        if released:
+            with self._condition:
+                for node_ready_at, request, child_id in released:
                     self._add_to_ready_queue(node_ready_at, request)
                     self._request_to_session[request.id] = (session_id, child_id)
-                    state.pending_nodes.discard(child_id)
-                    state.queued_nodes.add(child_id)
 
-            if not state.pending_nodes and not state.queued_nodes:
+        if session_finished:
+            with self._condition:
                 del self._sessions[session_id]
+                del self._session_locks[session_id]
                 self._try_activate_pending_locked()
 
     def has_pending_work(self) -> bool:
