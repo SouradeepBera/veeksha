@@ -14,7 +14,7 @@ class RuntimeConfig:
         help="Grace period for in-flight requests after timeout. -1 waits for all, 0 exits immediately.",
     )
     num_dispatcher_threads: int = field(
-        2, help="Number of threads for dispatching requests to workers."
+        4, help="Number of threads for dispatching requests to workers."
     )
     num_completion_threads: int = field(
         8,
