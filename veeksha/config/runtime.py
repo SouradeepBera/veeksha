@@ -25,7 +25,7 @@ class RuntimeConfig:
         ),
     )
     num_client_threads: Optional[int] = field(
-        None,
+        8,
         help=(
             "Number of async worker threads for making concurrent requests. "
             "None provisions one thread per eight target-concurrent sessions, "
