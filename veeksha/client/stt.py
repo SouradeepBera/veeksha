@@ -35,7 +35,6 @@ from veeksha.client.utils import (
     to_websocket_url,
 )
 from veeksha.core.audio_contract import AudioMetricKey
-from veeksha.core.blocking_executor import get_blocking_executor
 from veeksha.core.request import Request
 from veeksha.core.request_content import AudioChannelRequestContent
 from veeksha.core.response import ChannelResponse, RequestResult
@@ -691,9 +690,7 @@ class STTClient(BaseLLMClient):
         # on this worker's loop).
         try:
             loop = asyncio.get_running_loop()
-            clip = await loop.run_in_executor(
-                get_blocking_executor(), self._clip_assets, audio_path
-            )
+            clip = await loop.run_in_executor(None, self._clip_assets, audio_path)
             start_ms = _metadata_ms(request.metadata, "input_audio_start_ms")
             pcm_bytes = _slice_pcm16_bytes(
                 memoryview(clip.pcm),
