@@ -16,11 +16,6 @@ from veeksha.benchmark_utils import (
 from veeksha.client.registry import ClientRegistry
 from veeksha.config.benchmark import BenchmarkConfig
 from veeksha.config.endpoint import EndpointConfig
-from veeksha.core.blocking_executor import (
-    compute_blocking_thread_count,
-    shutdown_blocking_executor,
-    start_blocking_executor,
-)
 from veeksha.core.seeding import SeedManager
 from veeksha.core.thread_pool import ThreadPoolManager
 from veeksha.core.trace_recorder import TraceRecorder
@@ -41,10 +36,6 @@ from veeksha.workers.client_runner import ClientRunnerManager
 from veeksha.workers.prefetch import SharedSessionCounter
 
 logger = init_logger(__name__)
-
-# The prefetch pool is intentionally single-threaded: session generation is
-# serialized behind ``generator_lock`` anyway.
-NUM_PREFETCH_THREADS = 1
 
 
 def _warn_if_gil_enabled(stage: str) -> None:
@@ -119,19 +110,6 @@ def _run_main_loop(
         num_client_threads = (
             max(3, -(-int(target_sessions) // 8)) if target_sessions else 3
         )
-    # Size the shared blocking executor from whatever CPU budget the named
-    # worker threads leave behind, so the process thread count is a function of
-    # the config rather than of how many event loops happened to spin up a
-    # default executor.
-    start_blocking_executor(
-        compute_blocking_thread_count(
-            num_client_threads=num_client_threads,
-            num_dispatcher_threads=runtime_config.num_dispatcher_threads,
-            num_completion_threads=runtime_config.num_completion_threads,
-            num_prefetch_threads=NUM_PREFETCH_THREADS,
-        )
-    )
-
     client_queues = [Queue() for _ in range(num_client_threads)]
     output_queue = Queue()
     stop_event = threading.Event()
@@ -158,7 +136,7 @@ def _run_main_loop(
             "session_counter": session_counter,
             "pregenerated_sessions": pregenerated_sessions,
         },
-        pool_size=NUM_PREFETCH_THREADS,
+        pool_size=1,
     )
 
     pool_manager.create_pool(
@@ -359,7 +337,6 @@ def _run_benchmark(
     finally:
         if trace_recorder:
             trace_recorder.stop()
-        shutdown_blocking_executor()
 
     if tts_zombie_probe is not None:
         tts_zombie_probe.capture_end()

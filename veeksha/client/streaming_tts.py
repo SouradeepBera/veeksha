@@ -27,7 +27,6 @@ from veeksha.client.utils import (
     to_websocket_url,
 )
 from veeksha.core.audio_contract import AudioMetricKey, pcm_bytes_to_duration_ms
-from veeksha.core.blocking_executor import get_blocking_executor
 from veeksha.core.request import Request
 from veeksha.core.request_content import TextChannelRequestContent
 from veeksha.core.response import ChannelResponse, RequestResult
@@ -994,7 +993,7 @@ class StreamingTTSClient(BaseLLMClient):
         if audio_payloads:
             loop = asyncio.get_running_loop()
             audio_content, decode_error = await loop.run_in_executor(
-                get_blocking_executor(), protocol.event_class.join_audio, audio_payloads
+                None, protocol.event_class.join_audio, audio_payloads
             )
             if decode_error is not None and error_code is None:
                 error_code = 500

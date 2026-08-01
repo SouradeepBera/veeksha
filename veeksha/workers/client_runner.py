@@ -7,7 +7,6 @@ from queue import Queue, ShutDown
 from typing import List, Optional
 
 from veeksha.client.base import BaseLLMClient
-from veeksha.core.blocking_executor import get_blocking_executor
 from veeksha.core.response import RequestResult
 from veeksha.logger import init_logger
 from veeksha.traffic.base import BaseTrafficScheduler
@@ -61,17 +60,9 @@ class ClientWorker:
         while True:
             try:
                 # avoid blocking the event loop
-                item = await loop.run_in_executor(
-                    get_blocking_executor(), self.input_queue.get
-                )
+                item = await loop.run_in_executor(None, self.input_queue.get)
             except ShutDown:
                 # ClientRunnerManager.stop() closed the queue
-                break
-            except (RuntimeError, asyncio.CancelledError):
-                # The shared blocking executor was shut down (teardown raced
-                # this worker): submitting raises RuntimeError, an already
-                # queued get is cancelled.  Retrying would spin forever, so
-                # treat it like a closed queue.
                 break
             except Exception:
                 continue
