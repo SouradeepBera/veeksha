@@ -42,7 +42,7 @@ dependencies = [
     "textual-plotext",
     "requests",
     "uvloop",
-    "aiohttp",
+    "httpx",
     "nvidia-ml-py",
     "rich",
     "vidhi",

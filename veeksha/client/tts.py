@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import threading
@@ -12,11 +11,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import quote, urlencode, urljoin
 
-import aiohttp
+import httpx
 import numpy as np
 
 from veeksha.client.base import BaseLLMClient
-from veeksha.client.http_session import close_session, new_session
 from veeksha.client.utils import resolve_provider_api_key
 from veeksha.core.audio_contract import AudioMetricKey
 from veeksha.core.request import Request
@@ -59,10 +57,10 @@ class HTTPProviderProtocol(Protocol):
 
     def build_request(self, api_base: str, text: str) -> TTSHTTPRequest: ...
 
-    def validate_response(self, response: aiohttp.ClientResponse) -> None: ...
+    def validate_response(self, response: httpx.Response) -> None: ...
 
     def iter_audio_chunks(
-        self, response: aiohttp.ClientResponse, chunk_size: int
+        self, response: httpx.Response, chunk_size: int
     ) -> AsyncIterator[bytes]: ...
 
 
@@ -75,7 +73,7 @@ class _RawAudioHTTPProtocol:
         "binary/octet-stream",
     }
 
-    def validate_response(self, response: aiohttp.ClientResponse) -> None:
+    def validate_response(self, response: httpx.Response) -> None:
         content_type = response.headers.get("Content-Type", "")
         media_type = content_type.partition(";")[0].strip().lower()
         if (
@@ -88,9 +86,9 @@ class _RawAudioHTTPProtocol:
             )
 
     async def iter_audio_chunks(
-        self, response: aiohttp.ClientResponse, chunk_size: int
+        self, response: httpx.Response, chunk_size: int
     ) -> AsyncIterator[bytes]:
-        async for chunk in response.content.iter_chunked(chunk_size):
+        async for chunk in response.aiter_bytes(chunk_size=chunk_size):
             if chunk:
                 yield chunk
 
@@ -239,7 +237,7 @@ class MistralHTTPProtocol:
             },
         )
 
-    def validate_response(self, response: aiohttp.ClientResponse) -> None:
+    def validate_response(self, response: httpx.Response) -> None:
         content_type = response.headers.get("Content-Type", "")
         media_type = content_type.partition(";")[0].strip().lower()
         if media_type != "text/event-stream":
@@ -249,12 +247,11 @@ class MistralHTTPProtocol:
             )
 
     async def iter_audio_chunks(
-        self, response: aiohttp.ClientResponse, chunk_size: int
+        self, response: httpx.Response, chunk_size: int
     ) -> AsyncIterator[bytes]:
         del chunk_size  # SSE events define provider chunk boundaries.
         event_name: str | None = None
-        async for raw_line in response.content:
-            line = raw_line.decode("utf-8", "replace").strip()
+        async for line in response.aiter_lines():
             if line.startswith("event:"):
                 event_name = line.removeprefix("event:").strip()
                 continue
@@ -319,15 +316,12 @@ class TTSClient(BaseLLMClient):
         self._protocol = protocol_class(config, self.api_key)
         self._client_storage = threading.local()
 
-    def _get_client(self) -> aiohttp.ClientSession:
-        """Return a thread-local aiohttp session bound to the caller's event loop."""
+    def _get_client(self) -> httpx.AsyncClient:
         if not hasattr(self._client_storage, "client"):
-            self._client_storage.client = new_session(self._http_config.request_timeout)
+            self._client_storage.client = httpx.AsyncClient(
+                timeout=self._http_config.request_timeout
+            )
         return self._client_storage.client
-
-    async def aclose(self) -> None:
-        """Close the session bound to the calling thread's event loop."""
-        await close_session(self._client_storage)
 
     async def send_request(
         self,
@@ -375,10 +369,12 @@ class TTSClient(BaseLLMClient):
             client_sent_at = start
 
         try:
-            async with self._get_client().post(
+            async with self._get_client().stream(
+                "POST",
                 provider_request.url,
                 headers=provider_request.headers,
                 json=provider_request.payload,
+                timeout=self._http_config.request_timeout,
             ) as response:
                 response.raise_for_status()
                 self._protocol.validate_response(response)
@@ -404,15 +400,15 @@ class TTSClient(BaseLLMClient):
         except TTSProtocolError as exc:
             error_code = 502
             error_msg = str(exc)
-        except aiohttp.ClientResponseError as exc:
-            error_code = exc.status or 500
+        except httpx.HTTPStatusError as exc:
+            error_code = exc.response.status_code
             error_msg = str(exc)
-        except asyncio.TimeoutError:
-            error_code = 408
-            error_msg = "TTS request timed out"
-        except aiohttp.ClientConnectorError as exc:
+        except httpx.ConnectError as exc:
             error_code = 503
             error_msg = str(exc)
+        except httpx.TimeoutException:
+            error_code = 408
+            error_msg = "TTS request timed out"
         except Exception as exc:
             error_code = 520
             error_msg = str(exc)

@@ -90,9 +90,6 @@ class ClientWorker:
                 task.cancel()
             await asyncio.wait(active_tasks, timeout=2.0)
 
-        # Sessions bind to this loop, which ``run()`` closes next.
-        await self.client.aclose()
-
         logger.debug("Client worker %d exiting", self.worker_id)
 
     async def _process_request(self, item) -> None:

@@ -6,14 +6,11 @@ import importlib.util
 import json
 import sys
 import types
-from collections.abc import AsyncIterator
 from typing import Any
 
-import aiohttp
+import httpx
 import numpy as np
 import pytest
-from multidict import CIMultiDict
-from yarl import URL
 
 if (
     "transformers" not in sys.modules
@@ -38,48 +35,11 @@ from veeksha.core.request_content import TextChannelRequestContent
 from veeksha.types import ChannelModality
 
 
-class _FakeContent:
-    """The pieces of ``aiohttp``'s streaming body the TTS protocols use."""
-
-    def __init__(self, body: bytes) -> None:
-        self._body = body
-
-    async def iter_chunked(self, chunk_size: int) -> AsyncIterator[bytes]:
-        for start in range(0, len(self._body), chunk_size):
-            yield self._body[start : start + chunk_size]
-
-    async def __aiter__(self) -> AsyncIterator[bytes]:
-        # aiohttp iterates a response body line by line, newline included.
-        for line in self._body.splitlines(keepends=True):
-            yield line
-
-
-class _FakeResponse:
-    def __init__(
-        self, status: int, *, body: bytes = b"", headers: dict[str, str] | None = None
-    ) -> None:
-        self.status = status
-        self.headers = headers or {}
-        self.content = _FakeContent(body)
-
-    def raise_for_status(self) -> None:
-        if self.status >= 400:
-            url = URL("https://provider.example/speak")
-            raise aiohttp.ClientResponseError(
-                request_info=aiohttp.RequestInfo(
-                    url=url, method="POST", headers=CIMultiDict(), real_url=url
-                ),
-                history=(),
-                status=self.status,
-                message="rate limited",
-            )
-
-
-class _FakeRequestContext:
-    def __init__(self, response: _FakeResponse) -> None:
+class _FakeStream:
+    def __init__(self, response: httpx.Response) -> None:
         self.response = response
 
-    async def __aenter__(self) -> _FakeResponse:
+    async def __aenter__(self) -> httpx.Response:
         return self.response
 
     async def __aexit__(self, *args: object) -> None:
@@ -87,13 +47,13 @@ class _FakeRequestContext:
 
 
 class _FakeAsyncClient:
-    def __init__(self, response: _FakeResponse) -> None:
+    def __init__(self, response: httpx.Response) -> None:
         self.response = response
         self.calls: list[dict[str, Any]] = []
 
-    def post(self, url: str, **kwargs: Any) -> _FakeRequestContext:
-        self.calls.append({"url": url, **kwargs})
-        return _FakeRequestContext(self.response)
+    def stream(self, method: str, url: str, **kwargs: Any) -> _FakeStream:
+        self.calls.append({"method": method, "url": url, **kwargs})
+        return _FakeStream(self.response)
 
 
 def _request() -> Request:
@@ -140,6 +100,7 @@ def test_http_providers_share_streaming_audio_lifecycle(
 ) -> None:
     config = _config(provider)
     client = TTSClient(config)
+    request = httpx.Request("POST", "https://provider.example/speak")
     if provider == "mistral":
         float32_audio = np.zeros(2_400, dtype="<f4").tobytes()
         encoded_audio = base64.b64encode(float32_audio).decode("ascii")
@@ -149,16 +110,18 @@ def test_http_providers_share_streaming_audio_lifecycle(
             "event: speech.audio.done\n"
             "data: {}\n\n"
         ).encode()
-        response = _FakeResponse(
+        response = httpx.Response(
             200,
-            body=content,
+            content=content,
             headers={"Content-Type": "text/event-stream"},
+            request=request,
         )
     else:
-        response = _FakeResponse(
+        response = httpx.Response(
             200,
-            body=bytes(4_800),
+            content=bytes(4_800),
             headers={"Content-Type": "audio/l16"},
+            request=request,
         )
     fake_client = _FakeAsyncClient(response)
     client._get_client = lambda: fake_client  # type: ignore[method-assign]
@@ -242,8 +205,9 @@ def test_mistral_float32_pcm_is_normalized_to_pcm16() -> None:
 @pytest.mark.unit
 def test_http_client_preserves_provider_status_code() -> None:
     client = TTSClient(_config("deepgram_flux"))
+    request = httpx.Request("POST", "https://provider.example/speak")
     client._get_client = lambda: _FakeAsyncClient(  # type: ignore[method-assign]
-        _FakeResponse(429)
+        httpx.Response(429, text="rate limited", request=request)
     )
 
     result = asyncio.run(client.send_request(_request(), session_id=1))
